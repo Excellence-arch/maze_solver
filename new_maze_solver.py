@@ -19,6 +19,11 @@ servo.freq(50)
 trig = Pin(3, Pin.OUT)
 echo = Pin(4, Pin.IN)
 
+# Maze tracking
+maze = {}  # Stores visited positions {(x, y): visit_count}
+pos = [0, 0]  # Current (x, y) position
+direction = "UP"  # UP, DOWN, LEFT, RIGHT
+
 # Speed Control
 def set_speed(speed=30000):
     ENA.duty_u16(speed)
@@ -39,6 +44,18 @@ def forward():
     IN3.low()
     IN4.high()
     utime.sleep(0.5)
+    stop()
+    
+    if direction == "UP":
+        pos[1] += 1
+    elif direction == "DOWN":
+        pos[1] -= 1
+    elif direction == "LEFT":
+        pos[0] -= 1
+    elif direction == "RIGHT":
+        pos[0] += 1
+
+    maze[tuple(pos)] = maze.get(tuple(pos), 0) + 1  # Increase visit count
 
 def turn_left():
     set_speed()
@@ -47,6 +64,17 @@ def turn_left():
     IN3.low()
     IN4.high()  # Right motor backward
     utime.sleep(0.4)
+    stop()
+
+    # Update direction
+    if direction == "UP":
+        direction = "LEFT"
+    elif direction == "LEFT":
+        direction = "DOWN"
+    elif direction == "DOWN":
+        direction = "RIGHT"
+    elif direction == "RIGHT":
+        direction = "UP"
 
 def turn_right():
     set_speed()
@@ -54,7 +82,18 @@ def turn_right():
     IN2.high()  # Left motor backward
     IN3.high()
     IN4.low()   # Right motor forward
-    utime.sleep(0.4)
+    utime.sleep(0.5)
+    stop()
+
+    # Update direction
+    if direction == "UP":
+        direction = "RIGHT"
+    elif direction == "RIGHT":
+        direction = "DOWN"
+    elif direction == "DOWN":
+        direction = "LEFT"
+    elif direction == "LEFT":
+        direction = "UP"
 
 def stop():
     ENA.duty_u16(0)
@@ -87,8 +126,9 @@ def get_distance():
 #     utime.sleep(0.4)
 
 front=4400
-# left = 7500
-# right=1200
+left = 7500
+right=1200
+
 # Move servo to specific angle (MG996R duty cycle)
 def move_servo(angle):
     utime.sleep(0.5)  # Allow servo to move
@@ -96,24 +136,73 @@ def move_servo(angle):
     # duty = int(((angle / 180) * 2000) + 500)  # Adjusted for MG996R (500-2500us range)
     # servo.duty_u16(int(duty * 65.536))  # Convert to 16-bit range
     # servo.duty_u16(0)  # Stop sending signal
+    
+# Maze-solving algorithm
+def solve_maze():
+    while True:
+        dist_front = get_distance()
+        print(f"Front: {dist_front} cm, Position: {tuple(pos)}")
 
-while True:
-    forward()
-    utime.sleep(1)
-    stop()
-    utime.sleep(1)
-    backward()
-    utime.sleep(1)
-    stop()
-    utime.sleep(1)
-    turn_right()
-    utime.sleep(1)
-    stop()
-    utime.sleep(1)
-    turn_left()
-    utime.sleep(1)
-    stop()
-    utime.sleep(1)
+        if dist_front > 15:
+            forward()
+        else:
+            stop()
+            utime.sleep(0.5)
+
+            # Scan left and right
+            move_servo(left)  # Look left
+            dist_left = get_distance()
+            utime.sleep(0.5)
+
+            move_servo(right)  # Look right
+            dist_right = get_distance()
+            utime.sleep(0.5)
+
+            move_servo(front)  # Reset
+
+            # Determine least visited direction
+            left_pos = (pos[0] - 1, pos[1]) if direction == "UP" else \
+                       (pos[0] + 1, pos[1]) if direction == "DOWN" else \
+                       (pos[0], pos[1] - 1) if direction == "RIGHT" else \
+                       (pos[0], pos[1] + 1)
+
+            right_pos = (pos[0] + 1, pos[1]) if direction == "UP" else \
+                        (pos[0] - 1, pos[1]) if direction == "DOWN" else \
+                        (pos[0], pos[1] + 1) if direction == "RIGHT" else \
+                        (pos[0], pos[1] - 1)
+
+            left_visits = maze.get(left_pos, 0)
+            right_visits = maze.get(right_pos, 0)
+
+            if dist_left > 15 and left_visits < right_visits:
+                turn_left()
+            elif dist_right > 15:
+                turn_right()
+            else:
+                print("Backtracking...")
+                turn_right()
+                turn_right()  # Reverse direction
+                forward()
+                
+solve_maze()
+
+# while True:
+#     forward()
+#     utime.sleep(1)
+#     stop()
+#     utime.sleep(1)
+#     backward()
+#     utime.sleep(1)
+#     stop()
+#     utime.sleep(1)
+#     turn_right()
+#     utime.sleep(1)
+#     stop()
+#     utime.sleep(1)
+#     turn_left()
+#     utime.sleep(1)
+#     stop()
+#     utime.sleep(1)
     # move_servo(front)
     # distance = get_distance()
     # print('Distance:', distance)
