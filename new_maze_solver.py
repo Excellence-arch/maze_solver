@@ -25,9 +25,9 @@ pos = [0, 0]  # Current (x, y) position
 direction = "UP"  # UP, DOWN, LEFT, RIGHT
 
 # Speed Control
-def set_speed(speed=30000):
-    ENA.duty_u16(speed)
-    ENB.duty_u16(speed)
+def set_speed(speed=3000): 
+    ENA.duty_u16(30000)
+    ENB.duty_u16(30000)
 
 # Movement functions
 def backward():
@@ -38,7 +38,8 @@ def backward():
     IN4.low()
 
 def forward():
-    set_speed()
+#     set_speed()
+    # global direction
     IN1.low()
     IN2.high()
     IN3.low()
@@ -59,11 +60,12 @@ def forward():
 
 def turn_left():
     set_speed()
+    global direction
     IN1.high()
     IN2.low()   # Left motor forward
     IN3.low()
     IN4.high()  # Right motor backward
-    utime.sleep(0.4)
+    utime.sleep(1)
     stop()
 
     # Update direction
@@ -77,6 +79,7 @@ def turn_left():
         direction = "UP"
 
 def turn_right():
+    global direction
     set_speed()
     IN1.low()
     IN2.high()  # Left motor backward
@@ -139,6 +142,7 @@ def move_servo(angle):
     
 # Maze-solving algorithm
 def solve_maze():
+    move_servo(front)
     while True:
         dist_front = get_distance()
         print(f"Front: {dist_front} cm, Position: {tuple(pos)}")
@@ -152,13 +156,14 @@ def solve_maze():
             # Scan left and right
             move_servo(left)  # Look left
             dist_left = get_distance()
-            utime.sleep(0.5)
+            utime.sleep(2)
 
             move_servo(right)  # Look right
             dist_right = get_distance()
-            utime.sleep(0.5)
+            utime.sleep(2)
 
             move_servo(front)  # Reset
+            utime.sleep(2)
 
             # Determine least visited direction
             left_pos = (pos[0] - 1, pos[1]) if direction == "UP" else \
@@ -180,8 +185,8 @@ def solve_maze():
                 turn_right()
             else:
                 print("Backtracking...")
-                turn_right()
-                turn_right()  # Reverse direction
+                turn_left()
+                turn_left()  # Reverse direction
                 forward()
                 
 solve_maze()
