@@ -25,9 +25,9 @@ pos = [0, 0]  # Current (x, y) position
 direction = "UP"  # UP, DOWN, LEFT, RIGHT
 
 # Speed Control
-def set_speed(speed=3000): 
-    ENA.duty_u16(30000)
-    ENB.duty_u16(30000)
+def set_speed(speed=30000): 
+    ENA.duty_u16(speed)
+    ENB.duty_u16(speed)
 
 # Movement functions
 def backward():
@@ -38,7 +38,7 @@ def backward():
     IN4.low()
 
 def forward():
-#     set_speed()
+    set_speed()
     # global direction
     IN1.low()
     IN2.high()
