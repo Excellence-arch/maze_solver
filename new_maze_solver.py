@@ -24,35 +24,24 @@ LEFT = 7500
 RIGHT = 1200
 
 # Maze tracking
-maze = {}  # Stores visited positions and directions tried
-pos = (0, 0)  # Current (x, y) position
+maze = {}
+pos = (0, 0)
 direction = "UP"  # UP, DOWN, LEFT, RIGHT
-path_history = []  # Tracks the path taken for backtracking
+path_history = []
+last_scan_time = utime.ticks_ms()
 
 # Speed Control
-def set_speed(speed=15000):
+def set_speed(speed=30000):
     ENA.duty_u16(speed)
     ENB.duty_u16(speed)
 
 # Movement functions
-def backward():
-    set_speed()
-    IN1.high()
-    IN2.low()
-    IN3.high()
-    IN4.low()
-    utime.sleep(0.5)
-    stop()
-
-def forward():
+def move_forward():
     global pos, path_history
-    set_speed()
     IN1.low()
     IN2.high()
     IN3.low()
     IN4.high()
-    utime.sleep(0.5)  # Move forward a fixed distance
-    stop()
     
     # Update position
     x, y = pos
@@ -77,45 +66,31 @@ def forward():
 
 def turn_left():
     global direction
-    set_speed()
     IN1.high()
     IN2.low()
     IN3.low()
     IN4.high()
     utime.sleep(0.5)
     stop()
+    
     # Update direction
-    if direction == "UP":
-        direction = "LEFT"
-    elif direction == "LEFT":
-        direction = "DOWN"
-    elif direction == "DOWN":
-        direction = "RIGHT"
-    elif direction == "RIGHT":
-        direction = "UP"
+    dir_map = {"UP": "LEFT", "LEFT": "DOWN", "DOWN": "RIGHT", "RIGHT": "UP"}
+    direction = dir_map[direction]
 
 def turn_right():
     global direction
-    set_speed()
     IN1.low()
     IN2.high()
     IN3.high()
     IN4.low()
     utime.sleep(0.5)
     stop()
+    
     # Update direction
-    if direction == "UP":
-        direction = "RIGHT"
-    elif direction == "RIGHT":
-        direction = "DOWN"
-    elif direction == "DOWN":
-        direction = "LEFT"
-    elif direction == "LEFT":
-        direction = "UP"
+    dir_map = {"UP": "RIGHT", "RIGHT": "DOWN", "DOWN": "LEFT", "LEFT": "UP"}
+    direction = dir_map[direction]
 
 def stop():
-    ENA.duty_u16(0)
-    ENB.duty_u16(0)
     IN1.low()
     IN2.low()
     IN3.low()
@@ -128,74 +103,88 @@ def get_distance():
     utime.sleep_us(10)
     trig.low()
     
-    while echo.value() == 0:
-        signal_off = utime.ticks_us()
-    while echo.value() == 1:
-        signal_on = utime.ticks_us()
+    timeout = 25000  # microseconds (25ms)
+    start = utime.ticks_us()
     
-    time_passed = signal_on - signal_off
-    return (time_passed * 0.0343) / 2
+    # Wait for echo to go high
+    while echo.value() == 0 and utime.ticks_diff(utime.ticks_us(), start) < timeout:
+        pass
+    
+    if echo.value() == 0:
+        return -1  # Timeout
+    
+    echo_start = utime.ticks_us()
+    
+    # Wait for echo to go low
+    while echo.value() == 1 and utime.ticks_diff(utime.ticks_us(), start) < timeout:
+        pass
+    
+    if echo.value() == 1:
+        return -1  # Timeout
+    
+    echo_end = utime.ticks_us()
+    
+    duration = echo_end - echo_start
+    distance = (duration * 0.0343) / 2  # cm
+    return distance if distance > 0 else -1
 
 def move_servo(angle):
     servo.duty_u16(angle)
-    utime.sleep(0.3)  # Reduced stabilization time
+    utime.sleep(0.2)  # Reduced stabilization time
 
-def scan(direction_angle):
-    stop()  # Stop motors before scanning
-    move_servo(direction_angle)
-    distance = get_distance()
-    move_servo(FRONT)
-    return distance
-
-def get_available_moves():
-    moves = {}
-    # Always check front first
-    move_servo(FRONT)
-    front_dist = get_distance()
-    moves['front'] = front_dist
+def scan_surroundings():
+    global last_scan_time
+    current_time = utime.ticks_ms()
     
-    # Only check sides if front is blocked
-    if front_dist < 15:
-        moves['left'] = scan(LEFT)
-        moves['right'] = scan(RIGHT)
-    
-    return moves
-
-def choose_direction(moves):
-    # If front is clear and not over-visited
-    if moves['front'] > 15:
-        if pos not in maze or direction not in maze[pos]['directions']:
-            return 'front'
-        elif maze[pos]['visits'] < 2:
-            return 'front'
-    
-    # Evaluate alternatives
-    possible = [d for d, dist in moves.items() if dist > 15]
-    if not possible:
+    # Only scan every 500ms to maintain forward motion
+    if utime.ticks_diff(current_time, last_scan_time) < 500:
         return None
     
-    # Prefer untried directions
-    current = maze.get(pos, {'directions': []})
-    untried = [d for d in possible if direction_from_move(d) not in current['directions']]
-    if untried:
-        return untried[0]
+    last_scan_time = current_time
+    surroundings = {}
     
-    # Otherwise choose least visited
-    visit_counts = {}
-    for d in possible:
-        new_dir = direction_from_move(d)
-        new_pos = get_new_position(pos, new_dir)
-        visit_counts[d] = maze.get(new_pos, {'visits': 0})['visits']
-    return min(possible, key=lambda x: visit_counts[x])
+    # Quick front check
+    move_servo(FRONT)
+    surroundings['front'] = get_distance()
+    
+    # Only scan sides if front is clear
+    if surroundings['front'] > 20 or surroundings['front'] == -1:
+        move_servo(LEFT)
+        surroundings['left'] = get_distance()
+        move_servo(RIGHT)
+        surroundings['right'] = get_distance()
+        move_servo(FRONT)  # Return to front
+        
+    return surroundings
+
+def choose_direction(surroundings):
+    if not surroundings:
+        return 'forward'
+    
+    # Always prefer forward if clear
+    if surroundings.get('front', 0) > 20 or surroundings.get('front', -1) == -1:
+        return 'forward'
+    
+    # Then check sides
+    options = []
+    if surroundings.get('left', 0) > 20:
+        options.append(('left', maze.get(get_new_position(pos, direction_from_move('left')), {'visits': 0})))
+    if surroundings.get('right', 0) > 20:
+        options.append(('right', maze.get(get_new_position(pos, direction_from_move('right')), {'visits': 0})))
+    
+    if not options:
+        return None  # No options
+    
+    # Choose least visited option
+    options.sort(key=lambda x: x[1]['visits'])
+    return options[0][0]
 
 def direction_from_move(move):
-    if move == 'front':
-        return direction
     dir_map = {
-        'UP': {'left': 'LEFT', 'right': 'RIGHT'},
-        'LEFT': {'left': 'DOWN', 'right': 'UP'},
-        'DOWN': {'left': 'RIGHT', 'right': 'LEFT'},
-        'RIGHT': {'left': 'UP', 'right': 'DOWN'}
+        'UP': {'left': 'LEFT', 'right': 'RIGHT', 'forward': 'UP'},
+        'LEFT': {'left': 'DOWN', 'right': 'UP', 'forward': 'LEFT'},
+        'DOWN': {'left': 'RIGHT', 'right': 'LEFT', 'forward': 'DOWN'},
+        'RIGHT': {'left': 'UP', 'right': 'DOWN', 'forward': 'RIGHT'}
     }
     return dir_map[direction][move]
 
@@ -210,45 +199,33 @@ def get_new_position(current_pos, dir):
     elif dir == "RIGHT":
         return (x + 1, y)
 
-def backtrack():
-    global pos, direction, path_history
-    if not path_history:
-        return False
-    
-    prev_pos, prev_dir = path_history.pop()
-    while direction != prev_dir:
-        turn_left()
-    turn_left()
-    turn_left()
-    forward()
-    pos = prev_pos
-    return True
-
 def solve_maze():
+    set_speed()
     move_servo(FRONT)
     
     while True:
-        moves = get_available_moves()
-        print(f"Position: {pos}, Direction: {direction}")
-        print(f"Available moves: {moves}")
+        # Continue moving forward while scanning
+        move_forward()
         
-        best_move = choose_direction(moves)
-        if best_move is None:
-            print("Backtracking...")
-            if not backtrack():
-                print("Maze unsolvable")
-                break
-            continue
+        # Get surroundings without stopping
+        surroundings = scan_surroundings()
         
-        if best_move == 'left':
-            turn_left()
-        elif best_move == 'right':
-            turn_right()
-        
-        forward()
-        
-        if maze[pos]['visits'] > 3:
-            print("Loop detected")
-            break
+        if surroundings:
+            print(f"Position: {pos}, Direction: {direction}")
+            print(f"Surroundings: {surroundings}")
+            
+            decision = choose_direction(surroundings)
+            
+            if decision == 'left':
+                turn_left()
+            elif decision == 'right':
+                turn_right()
+            elif decision is None:  # Dead end
+                print("Backtracking...")
+                turn_left()
+                turn_left()  # 180 degree turn
+                
+        utime.sleep(0.1)  # Small delay to prevent overwhelming the MCU
 
+# Start solving
 solve_maze()
