@@ -1,5 +1,4 @@
-from machine import Pin, PWM, time_pulse_us
-import heapq
+from machine import Pin, PWM
 import utime
 
 # Motor control pins (L298N)
@@ -13,19 +12,25 @@ ENB = PWM(Pin(17))
 
 # Servo for ultrasonic sensor (MG996R)
 servo = PWM(Pin(0))  
-servo.freq(50)  
+servo.freq(50)
 
 # Ultrasonic sensor pins
 trig = Pin(3, Pin.OUT)
 echo = Pin(4, Pin.IN)
 
+# Servo positions (duty cycle values)
+FRONT = 4400
+LEFT = 7500
+RIGHT = 1200
+
 # Maze tracking
-maze = {}  # Stores visited positions {(x, y): visit_count}
-pos = [0, 0]  # Current (x, y) position
+maze = {}  # Stores visited positions and directions tried
+pos = (0, 0)  # Current (x, y) position
 direction = "UP"  # UP, DOWN, LEFT, RIGHT
+path_history = []  # Tracks the path taken for backtracking
 
 # Speed Control
-def set_speed(speed=30000): 
+def set_speed(speed=15000):
     ENA.duty_u16(speed)
     ENB.duty_u16(speed)
 
@@ -36,38 +41,49 @@ def backward():
     IN2.low()
     IN3.high()
     IN4.low()
+    utime.sleep(0.5)
+    stop()
 
 def forward():
+    global pos, path_history
     set_speed()
-    # global direction
     IN1.low()
     IN2.high()
     IN3.low()
     IN4.high()
-    utime.sleep(0.5)
+    utime.sleep(0.5)  # Move forward a fixed distance
     stop()
     
+    # Update position
+    x, y = pos
     if direction == "UP":
-        pos[1] += 1
+        pos = (x, y + 1)
     elif direction == "DOWN":
-        pos[1] -= 1
+        pos = (x, y - 1)
     elif direction == "LEFT":
-        pos[0] -= 1
+        pos = (x - 1, y)
     elif direction == "RIGHT":
-        pos[0] += 1
-
-    maze[tuple(pos)] = maze.get(tuple(pos), 0) + 1  # Increase visit count
+        pos = (x + 1, y)
+    
+    # Update maze tracking
+    if pos not in maze:
+        maze[pos] = {'visits': 1, 'directions': [direction]}
+    else:
+        maze[pos]['visits'] += 1
+        if direction not in maze[pos]['directions']:
+            maze[pos]['directions'].append(direction)
+    
+    path_history.append((pos, direction))
 
 def turn_left():
-    set_speed()
     global direction
+    set_speed()
     IN1.high()
-    IN2.low()   # Left motor forward
+    IN2.low()
     IN3.low()
-    IN4.high()  # Right motor backward
-    utime.sleep(1)
+    IN4.high()
+    utime.sleep(0.5)
     stop()
-
     # Update direction
     if direction == "UP":
         direction = "LEFT"
@@ -82,12 +98,11 @@ def turn_right():
     global direction
     set_speed()
     IN1.low()
-    IN2.high()  # Left motor backward
+    IN2.high()
     IN3.high()
-    IN4.low()   # Right motor forward
+    IN4.low()
     utime.sleep(0.5)
     stop()
-
     # Update direction
     if direction == "UP":
         direction = "RIGHT"
@@ -106,7 +121,6 @@ def stop():
     IN3.low()
     IN4.low()
 
-# Get distance from ultrasonic sensor
 def get_distance():
     trig.low()
     utime.sleep_us(2)
@@ -120,173 +134,121 @@ def get_distance():
         signal_on = utime.ticks_us()
     
     time_passed = signal_on - signal_off
-    return (time_passed * 0.0343) / 2  # Convert to cm
+    return (time_passed * 0.0343) / 2
 
-# Move servo
-# def move_servo(angle):
-#     duty = int((angle / 180 * 5000) + 2500)  # MG996R calibrated range
-#     servo.duty_u16(duty)
-#     utime.sleep(0.4)
-
-front=4400
-left = 7500
-right=1200
-
-# Move servo to specific angle (MG996R duty cycle)
 def move_servo(angle):
-    utime.sleep(0.5)  # Allow servo to move
     servo.duty_u16(angle)
-    # duty = int(((angle / 180) * 2000) + 500)  # Adjusted for MG996R (500-2500us range)
-    # servo.duty_u16(int(duty * 65.536))  # Convert to 16-bit range
-    # servo.duty_u16(0)  # Stop sending signal
+    utime.sleep(0.3)  # Reduced stabilization time
+
+def scan(direction_angle):
+    stop()  # Stop motors before scanning
+    move_servo(direction_angle)
+    distance = get_distance()
+    move_servo(FRONT)
+    return distance
+
+def get_available_moves():
+    moves = {}
+    # Always check front first
+    move_servo(FRONT)
+    front_dist = get_distance()
+    moves['front'] = front_dist
     
-# Maze-solving algorithm
+    # Only check sides if front is blocked
+    if front_dist < 15:
+        moves['left'] = scan(LEFT)
+        moves['right'] = scan(RIGHT)
+    
+    return moves
+
+def choose_direction(moves):
+    # If front is clear and not over-visited
+    if moves['front'] > 15:
+        if pos not in maze or direction not in maze[pos]['directions']:
+            return 'front'
+        elif maze[pos]['visits'] < 2:
+            return 'front'
+    
+    # Evaluate alternatives
+    possible = [d for d, dist in moves.items() if dist > 15]
+    if not possible:
+        return None
+    
+    # Prefer untried directions
+    current = maze.get(pos, {'directions': []})
+    untried = [d for d in possible if direction_from_move(d) not in current['directions']]
+    if untried:
+        return untried[0]
+    
+    # Otherwise choose least visited
+    visit_counts = {}
+    for d in possible:
+        new_dir = direction_from_move(d)
+        new_pos = get_new_position(pos, new_dir)
+        visit_counts[d] = maze.get(new_pos, {'visits': 0})['visits']
+    return min(possible, key=lambda x: visit_counts[x])
+
+def direction_from_move(move):
+    if move == 'front':
+        return direction
+    dir_map = {
+        'UP': {'left': 'LEFT', 'right': 'RIGHT'},
+        'LEFT': {'left': 'DOWN', 'right': 'UP'},
+        'DOWN': {'left': 'RIGHT', 'right': 'LEFT'},
+        'RIGHT': {'left': 'UP', 'right': 'DOWN'}
+    }
+    return dir_map[direction][move]
+
+def get_new_position(current_pos, dir):
+    x, y = current_pos
+    if dir == "UP":
+        return (x, y + 1)
+    elif dir == "DOWN":
+        return (x, y - 1)
+    elif dir == "LEFT":
+        return (x - 1, y)
+    elif dir == "RIGHT":
+        return (x + 1, y)
+
+def backtrack():
+    global pos, direction, path_history
+    if not path_history:
+        return False
+    
+    prev_pos, prev_dir = path_history.pop()
+    while direction != prev_dir:
+        turn_left()
+    turn_left()
+    turn_left()
+    forward()
+    pos = prev_pos
+    return True
+
 def solve_maze():
-    move_servo(front)
+    move_servo(FRONT)
+    
     while True:
-        dist_front = get_distance()
-        print(f"Front: {dist_front} cm, Position: {tuple(pos)}")
+        moves = get_available_moves()
+        print(f"Position: {pos}, Direction: {direction}")
+        print(f"Available moves: {moves}")
+        
+        best_move = choose_direction(moves)
+        if best_move is None:
+            print("Backtracking...")
+            if not backtrack():
+                print("Maze unsolvable")
+                break
+            continue
+        
+        if best_move == 'left':
+            turn_left()
+        elif best_move == 'right':
+            turn_right()
+        
+        forward()
+        
+        if maze[pos]['visits'] > 3:
+            print("Loop detected")
+            break
 
-        if dist_front > 15:
-            forward()
-        else:
-            stop()
-            utime.sleep(0.5)
-
-            # Scan left and right
-            move_servo(left)  # Look left
-            dist_left = get_distance()
-            utime.sleep(2)
-
-            move_servo(right)  # Look right
-            dist_right = get_distance()
-            utime.sleep(2)
-
-            move_servo(front)  # Reset
-            utime.sleep(2)
-
-            # Determine least visited direction
-            left_pos = (pos[0] - 1, pos[1]) if direction == "UP" else \
-                       (pos[0] + 1, pos[1]) if direction == "DOWN" else \
-                       (pos[0], pos[1] - 1) if direction == "RIGHT" else \
-                       (pos[0], pos[1] + 1)
-
-            right_pos = (pos[0] + 1, pos[1]) if direction == "UP" else \
-                        (pos[0] - 1, pos[1]) if direction == "DOWN" else \
-                        (pos[0], pos[1] + 1) if direction == "RIGHT" else \
-                        (pos[0], pos[1] - 1)
-
-            left_visits = maze.get(left_pos, 0)
-            right_visits = maze.get(right_pos, 0)
-
-            if dist_left > 15 and left_visits < right_visits:
-                turn_left()
-            elif dist_right > 15:
-                turn_right()
-            else:
-                print("Backtracking...")
-                turn_left()
-                turn_left()  # Reverse direction
-                forward()
-                
 solve_maze()
-
-# while True:
-#     forward()
-#     utime.sleep(1)
-#     stop()
-#     utime.sleep(1)
-#     backward()
-#     utime.sleep(1)
-#     stop()
-#     utime.sleep(1)
-#     turn_right()
-#     utime.sleep(1)
-#     stop()
-#     utime.sleep(1)
-#     turn_left()
-#     utime.sleep(1)
-#     stop()
-#     utime.sleep(1)
-    # move_servo(front)
-    # distance = get_distance()
-    # print('Distance:', distance)
-    # utime.sleep(1)
-    # move_servo(1704)
-    # distance = get_distance()
-    # print('Distance:', distance)
-    # utime.sleep(1)
-    
-    
-# # Dijkstra's algorithm for maze solving
-# def dijkstra_solve():
-#     visited = set()  # Track visited positions
-#     backtrack_stack = []  # Store previous moves for backtracking
-#     pq = []  # Priority queue
-#     position = (0, 0)  # (x, y) Grid-like representation of movement
-#     heapq.heappush(pq, (0, position, 'START'))  # (cost, position, direction)
-
-#     while pq:
-#         cost, position, direction = heapq.heappop(pq)
-
-#         if position in visited:
-#             continue  # Skip already visited positions
-
-#         visited.add(position)  # Mark position as visited
-
-#         move_servo(90)  # Look forward
-#         front_distance = get_distance()
-
-#         move_servo(180)  # Look right
-#         right_distance = get_distance()
-
-#         move_servo(0)  # Look left
-#         left_distance = get_distance()
-
-#         available_moves = []
-
-#         # Define new positions assuming a grid (updating x, y coordinates)
-#         new_forward = (position[0], position[1] + 1)
-#         new_right = (position[0] + 1, position[1])
-#         new_left = (position[0] - 1, position[1])
-
-#         # Add valid moves to priority queue
-#         if front_distance > 15 and new_forward not in visited:
-#             available_moves.append(('F', cost + 1, new_forward))
-#         if right_distance > 15 and new_right not in visited:
-#             available_moves.append(('R', cost + 2, new_right))
-#         if left_distance > 15 and new_left not in visited:
-#             available_moves.append(('L', cost + 2, new_left))
-
-#         if available_moves:
-#             available_moves.sort(key=lambda x: x[1])  
-#             direction, _, new_position = available_moves[0]  
-#             backtrack_stack.append(position)  # Save current position before moving
-#         else:
-#             # If stuck, backtrack
-#             if backtrack_stack:
-#                 position = backtrack_stack.pop()  
-#                 backward()
-#                 utime.sleep(0.5)
-#                 continue  
-
-#         # Move based on the selected direction
-#         if direction == 'F':
-#             forward()
-#             position = new_forward
-#         elif direction == 'R':
-#             turn_right()
-#             position = new_right
-#         elif direction == 'L':
-#             turn_left()
-#             position = new_left
-
-#         utime.sleep(0.5)
-
-#         # Stop if the goal is reached (adjust stopping condition)
-#         if cost > 20:  # Example condition
-#             stop()
-#             break
-
-# # Run the maze solver
-# dijkstra_solve()
