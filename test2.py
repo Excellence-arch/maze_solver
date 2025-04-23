@@ -1,167 +1,241 @@
 from machine import Pin, PWM
-import time
+import utime
 
-# Motor control pins
-motor1A = Pin(17, Pin.OUT)
-motor1B = Pin(18, Pin.OUT)
-motor2A = Pin(19, Pin.OUT)
-motor2B = Pin(20, Pin.OUT)
-pwm1 = PWM(Pin(21))
-pwm2 = PWM(Pin(22))
-pwm1.freq(1000)
-pwm2.freq(1000)
+# Motor control pins (L298N)
+IN1 = Pin(14, Pin.OUT)  # Motor A
+IN2 = Pin(15, Pin.OUT)
+IN3 = Pin(12, Pin.OUT)  # Motor B
+IN4 = Pin(13, Pin.OUT)
 
-# Servo and Ultrasonic Sensor
-servo = PWM(Pin(16))
+ENA = PWM(Pin(16))  # PWM for speed control
+ENB = PWM(Pin(17))
+
+# Servo for ultrasonic sensor (MG996R)
+servo = PWM(Pin(0))  
 servo.freq(50)
-trig = Pin(14, Pin.OUT)
-echo = Pin(15, Pin.IN)
+
+# Ultrasonic sensor pins
+trig = Pin(3, Pin.OUT)
+echo = Pin(4, Pin.IN)
+
+# Servo positions (duty cycle values)
+FRONT = 4400
+LEFT = 7500
+RIGHT = 1200
 
 # Maze tracking
-maze = {}  # Stores visited positions {(x, y): visit_count}
-pos = [0, 0]  # Current (x, y) position
+maze = {}
+pos = (0, 0)
 direction = "UP"  # UP, DOWN, LEFT, RIGHT
+path_history = []
+last_scan_time = utime.ticks_ms()
+
+# Reduced speed (original was 30000)
+def set_speed(speed=15000):  # Reduced speed by 50%
+    ENA.duty_u16(speed)
+    ENB.duty_u16(speed)
 
 # Movement functions
 def move_forward():
-    global pos, direction
-    motor1A.high()
-    motor1B.low()
-    motor2A.high()
-    motor2B.low()
-    pwm1.duty_u16(30000)
-    pwm2.duty_u16(30000)
-    time.sleep(1)  # Move one grid step
-    stop()
-
-    # Update position in the grid
+    global pos, path_history
+    IN1.low()
+    IN2.high()
+    IN3.low()
+    IN4.high()
+    
+    # Update position
+    x, y = pos
     if direction == "UP":
-        pos[1] += 1
+        pos = (x, y + 1)
     elif direction == "DOWN":
-        pos[1] -= 1
+        pos = (x, y - 1)
     elif direction == "LEFT":
-        pos[0] -= 1
+        pos = (x - 1, y)
     elif direction == "RIGHT":
-        pos[0] += 1
-
-    maze[tuple(pos)] = maze.get(tuple(pos), 0) + 1  # Increase visit count
+        pos = (x + 1, y)
+    
+    # Update maze tracking
+    if pos not in maze:
+        maze[pos] = {'visits': 1, 'directions': [direction]}
+    else:
+        maze[pos]['visits'] += 1
+        if direction not in maze[pos]['directions']:
+            maze[pos]['directions'].append(direction)
+    
+    path_history.append((pos, direction))
 
 def turn_left():
     global direction
-    motor1A.low()
-    motor1B.high()
-    motor2A.high()
-    motor2B.low()
-    pwm1.duty_u16(20000)
-    pwm2.duty_u16(20000)
-    time.sleep(0.5)
+    IN1.high()
+    IN2.low()
+    IN3.low()
+    IN4.high()
+    utime.sleep(0.8)  # Increased turn time for reduced speed
     stop()
-
+    
     # Update direction
-    if direction == "UP":
-        direction = "LEFT"
-    elif direction == "LEFT":
-        direction = "DOWN"
-    elif direction == "DOWN":
-        direction = "RIGHT"
-    elif direction == "RIGHT":
-        direction = "UP"
+    dir_map = {"UP": "LEFT", "LEFT": "DOWN", "DOWN": "RIGHT", "RIGHT": "UP"}
+    direction = dir_map[direction]
 
 def turn_right():
     global direction
-    motor1A.high()
-    motor1B.low()
-    motor2A.low()
-    motor2B.high()
-    pwm1.duty_u16(20000)
-    pwm2.duty_u16(20000)
-    time.sleep(0.5)
+    IN1.low()
+    IN2.high()
+    IN3.high()
+    IN4.low()
+    utime.sleep(0.8)  # Increased turn time for reduced speed
     stop()
-
+    
     # Update direction
-    if direction == "UP":
-        direction = "RIGHT"
-    elif direction == "RIGHT":
-        direction = "DOWN"
-    elif direction == "DOWN":
-        direction = "LEFT"
-    elif direction == "LEFT":
-        direction = "UP"
+    dir_map = {"UP": "RIGHT", "RIGHT": "DOWN", "DOWN": "LEFT", "LEFT": "UP"}
+    direction = dir_map[direction]
 
 def stop():
-    motor1A.low()
-    motor1B.low()
-    motor2A.low()
-    motor2B.low()
+    IN1.low()
+    IN2.low()
+    IN3.low()
+    IN4.low()
 
-# Distance measurement
 def get_distance():
     trig.low()
-    time.sleep_us(2)
+    utime.sleep_us(2)
     trig.high()
-    time.sleep_us(10)
+    utime.sleep_us(10)
     trig.low()
-
-    while echo.value() == 0:
-        start_time = time.ticks_us()
-    while echo.value() == 1:
-        end_time = time.ticks_us()
-
-    duration = end_time - start_time
+    
+    timeout = 25000  # microseconds (25ms)
+    start = utime.ticks_us()
+    
+    # Wait for echo to go high
+    while echo.value() == 0 and utime.ticks_diff(utime.ticks_us(), start) < timeout:
+        pass
+    
+    if echo.value() == 0:
+        return -1  # Timeout
+    
+    echo_start = utime.ticks_us()
+    
+    # Wait for echo to go low
+    while echo.value() == 1 and utime.ticks_diff(utime.ticks_us(), start) < timeout:
+        pass
+    
+    if echo.value() == 1:
+        return -1  # Timeout
+    
+    echo_end = utime.ticks_us()
+    
+    duration = echo_end - echo_start
     distance = (duration * 0.0343) / 2  # cm
-    return distance
+    return distance if distance > 0 else -1
 
-# Servo control
-def set_servo(angle):
-    duty = int(5000 + (angle / 180) * 5000)
-    servo.duty_u16(duty)
-    time.sleep(0.3)
+def move_servo(angle):
+    servo.duty_u16(angle)
+    utime.sleep(0.5)  # Increased stabilization time for more accurate readings
 
-# Maze-solving algorithm
+def scan_surroundings():
+    global last_scan_time
+    current_time = utime.ticks_ms()
+    
+    # Only scan every 1000ms to allow proper servo movement and distance measurement
+    if utime.ticks_diff(current_time, last_scan_time) < 1000:
+        return None
+    
+    last_scan_time = current_time
+    surroundings = {}
+    
+    # Front check with extra measurement time
+    move_servo(FRONT)
+    utime.sleep(0.8)  # Additional stabilization
+    surroundings['front'] = get_distance()
+    
+    # Always scan sides (regardless of front distance) but with proper timing
+    move_servo(LEFT)
+    utime.sleep(0.8)  # Additional stabilization
+    surroundings['left'] = get_distance()
+    
+    move_servo(RIGHT)
+    utime.sleep(0.8)  # Additional stabilization
+    surroundings['right'] = get_distance()
+    
+    move_servo(FRONT)  # Return to front
+    utime.sleep(0.8)  # Additional stabilization
+    
+    return surroundings
+
+def choose_direction(surroundings):
+    if not surroundings:
+        return 'forward'
+    
+    # Threshold distance (in cm)
+    threshold = 20
+    
+    # Always prefer forward if clear
+    if surroundings.get('front', 0) > threshold or surroundings.get('front', -1) == -1:
+        return 'forward'
+    
+    # Then check sides
+    options = []
+    if surroundings.get('left', 0) > threshold:
+        options.append(('left', maze.get(get_new_position(pos, direction_from_move('left')), {'visits': 0})))
+    if surroundings.get('right', 0) > threshold:
+        options.append(('right', maze.get(get_new_position(pos, direction_from_move('right')), {'visits': 0})))
+    
+    if not options:
+        return None  # No options
+    
+    # Choose least visited option
+    options.sort(key=lambda x: x[1]['visits'])
+    return options[0][0]
+
+def direction_from_move(move):
+    dir_map = {
+        'UP': {'left': 'LEFT', 'right': 'RIGHT', 'forward': 'UP'},
+        'LEFT': {'left': 'DOWN', 'right': 'UP', 'forward': 'LEFT'},
+        'DOWN': {'left': 'RIGHT', 'right': 'LEFT', 'forward': 'DOWN'},
+        'RIGHT': {'left': 'UP', 'right': 'DOWN', 'forward': 'RIGHT'}
+    }
+    return dir_map[direction][move]
+
+def get_new_position(current_pos, dir):
+    x, y = current_pos
+    if dir == "UP":
+        return (x, y + 1)
+    elif dir == "DOWN":
+        return (x, y - 1)
+    elif dir == "LEFT":
+        return (x - 1, y)
+    elif dir == "RIGHT":
+        return (x + 1, y)
+
 def solve_maze():
+    set_speed()  # Using the reduced speed
+    move_servo(FRONT)
+    
     while True:
-        dist_front = get_distance()
-        print(f"Front: {dist_front} cm, Position: {tuple(pos)}")
-
-        if dist_front > 15:
-            move_forward()
-        else:
-            stop()
-            time.sleep(0.5)
-
-            # Scan left and right
-            set_servo(0)  # Look left
-            dist_left = get_distance()
-            time.sleep(0.5)
-
-            set_servo(180)  # Look right
-            dist_right = get_distance()
-            time.sleep(0.5)
-
-            set_servo(90)  # Reset
-
-            # Determine least visited direction
-            left_pos = (pos[0] - 1, pos[1]) if direction == "UP" else \
-                       (pos[0] + 1, pos[1]) if direction == "DOWN" else \
-                       (pos[0], pos[1] - 1) if direction == "RIGHT" else \
-                       (pos[0], pos[1] + 1)
-
-            right_pos = (pos[0] + 1, pos[1]) if direction == "UP" else \
-                        (pos[0] - 1, pos[1]) if direction == "DOWN" else \
-                        (pos[0], pos[1] + 1) if direction == "RIGHT" else \
-                        (pos[0], pos[1] - 1)
-
-            left_visits = maze.get(left_pos, 0)
-            right_visits = maze.get(right_pos, 0)
-
-            if dist_left > 15 and left_visits < right_visits:
+        # Continue moving forward while scanning
+        move_forward()
+        
+        # Get surroundings with proper timing
+        surroundings = scan_surroundings()
+        
+        if surroundings:
+            print(f"Position: {pos}, Direction: {direction}")
+            print(f"Surroundings: Front: {surroundings['front']}cm, Left: {surroundings['left']}cm, Right: {surroundings['right']}cm")
+            
+            decision = choose_direction(surroundings)
+            
+            if decision == 'left':
+                print("Turning left")
                 turn_left()
-            elif dist_right > 15:
+            elif decision == 'right':
+                print("Turning right")
                 turn_right()
-            else:
+            elif decision is None:  # Dead end
                 print("Backtracking...")
-                turn_right()
-                turn_right()  # Reverse direction
-                move_forward()
+                turn_left()
+                turn_left()  # 180 degree turn
+                
+        utime.sleep(0.2)  # Increased delay to reduce MCU load
 
+# Start solving
 solve_maze()
