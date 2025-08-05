@@ -4,11 +4,11 @@ import utime
 # Motor control pins (L298N)
 IN1 = Pin(14, Pin.OUT)  # Motor A
 IN2 = Pin(15, Pin.OUT)
-IN3 = Pin(12, Pin.OUT)  # Motor B
+IN3 = Pin(12, Pin.OUT)  # Motor BF
 IN4 = Pin(13, Pin.OUT)
 
 ENA = PWM(Pin(16))  # PWM for speed control
-ENB = PWM(Pin(17))
+ENB = PWM(Pin(20))
 
 # Servo for ultrasonic sensor (MG996R)
 servo = PWM(Pin(0))  
@@ -31,13 +31,15 @@ path_history = []
 last_scan_time = utime.ticks_ms()
 
 # Reduced speed (original was 30000)
-def set_speed(speed=15000):  # Reduced speed by 50%
-    ENA.duty_u16(speed)
-    ENB.duty_u16(speed)
+def set_speed(speed1=35000, speed2=65353 ):  # Reduced speed by 50%
+    ENA.duty_u16(speed1)
+    ENB.duty_u16(speed2)
 
 # Movement functions
 def move_forward():
     global pos, path_history
+    # ENA.duty_u16(motor1)
+    # ENB.duty_u16(motor2)
     IN1.low()
     IN2.high()
     IN3.low()
