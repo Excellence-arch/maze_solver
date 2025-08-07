@@ -16,10 +16,10 @@ ECHO = Pin(6, Pin.IN)
 servo = PWM(Pin(7))
 servo.freq(50)
 
-def move_forward():
+def move_backward():
     IN1.low(); IN2.high(); IN3.low(); IN4.high()
 
-def move_backward():
+def move_forward():
     IN1.high(); IN2.low(); IN3.high(); IN4.low()
 
 def turn_left():
@@ -208,7 +208,11 @@ while True:
             set_servo_angle(30)
         elif 'GET /obstacle' in request:
             distance = get_distance()
-            status = "Obstacle Detected!" if distance < 10 else "Clear"
+            if distance < 10:
+                stop()
+                status = "Obstacle Detected!"
+            else:
+                status = "Clear"
             cl.send('HTTP/1.0 200 OK\r\nContent-type: text/plain\r\n\r\n')
             cl.send(status)
             cl.close()
